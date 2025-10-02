@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+
+from scapy.all import sniff, ARP, TCP, Raw, IP
+import re
+import os
+import threading
+import time
+from datetime import datetime
+import zipfile
+
+# ==================== КОНФІГУРАЦІЯ ====================
+OUTPUT_DIR = "security_logs"
+FILES_DIR = os.path.join(OUTPUT_DIR, "captured_files")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs(FILES_DIR, exist_ok=True)
+
+# Регулярки та константи
+FILE_EXTS = ["jpg", "jpeg", "png", "gif", "bmp", "mp4", "avi", "mov", "mkv", "webm"]
+FILENAME_RE = re.compile(
+    r'Content-Disposition:.*filename=[\"\' ]?([^\"\'\s]+\.(' + "|".join(FILE_EXTS) + r'))',
+    re.IGNORECASE
+)
+USERNAME_RE = re.compile(r'username=([^&\s]*)')
+PASSWORD_RE = re.compile(r'password=([^&\s]*)')
+
+# Кеш для унікальних попереджень
+last_arp_alert = ""
+last_http_alert = ""
+last_cred_alert = ""
+log_lock = threading.Lock()
+
+# ==================== 1. ARP-МОНІТОРИНГ ====================
+def arp_monitor():
+    def arp_callback(packet):
+        if packet.haslayer(ARP) and packet[ARP].op == 2:
+            msg = f"{packet[ARP].psrc} claims to be {packet[ARP].hwsrc}"
+            print(f"[!] ARP-відповідь: {packet[ARP].psrc} -> {packet[ARP].pdst}")
+            try:
+                with log_lock:
+                    with open(f"{OUTPUT_DIR}/arp_log.txt", "a", encoding="utf-8") as f:
+                        f.write(f"{datetime.now()}: {msg}\n")
+            except Exception as e:
+                print(f"[!] Помилка запису ARP-логу: {e}")
+
+    print("[*] Запуск ARP-монітора...")
+    sniff(filter="arp", prn=arp_callback, store=0)
+
+# ==================== 2. HTTP-СНИФФІНГ (логіни/паролі + файли) ====================
+def save_file(filename, data):
+    path = os.path.join(FILES_DIR, filename)
+    try:
+        with log_lock:
+            with open(path, "wb") as f:
+                f.write(data)
+        print(f"[+] Файл збережено: {path}")
+    except Exception as e:
+        print(f"[!] Помилка збереження файлу: {e}")
+
+def extract_and_save_file(filename, data):
+    # Створюємо папку для розпакованих файлів
+    extracted_dir = os.path.join(FILES_DIR, "extracted")
+    os.makedirs(extracted_dir, exist_ok=True)
+    # Зберігаємо оригінальний файл
+    save_file(filename, data)
+    # Якщо це zip-архів, розпаковуємо
+    if filename.lower().endswith(".zip"):
+        try:
+            zip_path = os.path.join(FILES_DIR, filename)
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(extracted_dir)
+            print(f"[+] Zip-архів розпаковано у: {extracted_dir}")
+        except Exception as e:
+            print(f"[!] Помилка при розпакуванні zip: {e}")
+    # Якщо це rar-архів, залишаємо коментар
+    elif filename.lower().endswith(".rar"):
+        print("[!] Для розпакування rar потрібен модуль rarfile та встановлений unrar.")
+        # import rarfile
+        # rf = rarfile.RarFile(os.path.join(FILES_DIR, filename))
+        # rf.extractall(extracted_dir)
+
+def extract_files_from_http(payload):
+    try:
+        decoded = payload.decode(errors='ignore')
+    except Exception:
+        return
+    for match in FILENAME_RE.findall(decoded):
+        filename = match[0]
+        file_data = payload.split(b"\r\n\r\n")[-1]
+        extract_and_save_file(filename, file_data)
+
+def parse_http_payload(payload):
+    try:
+        username_match = USERNAME_RE.search(payload)
+        password_match = PASSWORD_RE.search(payload)
+        if username_match or password_match:
+            print("\n[!] Можливі дані для входу:")
+            if username_match:
+                print(f"   Логін: {username_match.group(1)}")
+            if password_match:
+                print(f"   Пароль: {password_match.group(1)}")
+            print("-" * 50)
+            with log_lock:
+                with open(f"{OUTPUT_DIR}/http_credentials.txt", "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now()}: {payload}\n")
+    except Exception as e:
+        print(f"[!] Помилка при парсингу HTTP payload: {e}")
+
+def http_sniffer():
+    def http_callback(packet):
+        if packet.haslayer(TCP) and packet.haslayer(Raw):
+            try:
+                payload = packet[Raw].load
+                try:
+                    decoded_payload = payload.decode('utf-8', errors='ignore')
+                except Exception:
+                    return
+                if ("GET /" in decoded_payload or "POST /" in decoded_payload) and packet.haslayer(IP):
+                    src_ip = packet[IP].src
+                    dst_ip = packet[IP].dst
+                    print(f"\n[HTTP] {src_ip} -> {dst_ip}")
+                    print("-" * 30)
+                    headers = decoded_payload.split('\r\n\r\n')[0]
+                    print(headers)
+                    parse_http_payload(decoded_payload)
+                    try:
+                        with log_lock:
+                            with open(f"{OUTPUT_DIR}/http_log.txt", "a", encoding="utf-8") as f:
+                                f.write(f"{datetime.now()}: {decoded_payload[:200]}...\n")
+                    except Exception as e:
+                        print(f"[!] Помилка запису HTTP-логу: {e}")
+                if b"HTTP/1." in payload:
+                    extract_files_from_http(payload)
+            except Exception as e:
+                print(f"[!] Помилка при обробці HTTP-пакету: {e}")
+
+    print("[*] Запуск HTTP-сниффера (логіни/паролі + файли)...")
+    sniff(filter="tcp port 80 or tcp port 8080", prn=http_callback, store=0)
+
+# ==================== 3. ДЕТЕКЦІЯ ПІДОЗРІЛИХ ДІЯНЬ ====================
+def tail(filename, n=20):
+    try:
+        with open(filename, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            block = 1024
+            data = b""
+            while size > 0 and data.count(b"\n") < n:
+                read_size = min(block, size)
+                f.seek(size - read_size)
+                data = f.read(read_size) + data
+                size -= read_size
+            return data.decode(errors="ignore").splitlines()[-n:]
+    except Exception:
+        return []
+
+def detect_suspicious_activity():
+    global last_arp_alert, last_http_alert, last_cred_alert
+    # ARP
+    arp_log = f"{OUTPUT_DIR}/arp_log.txt"
+    if os.path.exists(arp_log):
+        lines = tail(arp_log, 10)
+        for line in lines:
+            if "claims to be" in line and line != last_arp_alert:
+                print("[!] Виявлено можливий ARP-спуфінгу!")
+                last_arp_alert = line
+                break
+    # HTTP
+    http_log = f"{OUTPUT_DIR}/http_log.txt"
+    if os.path.exists(http_log):
+        lines = tail(http_log, 10)
+        for line in lines:
+            if "password=" in line and line != last_http_alert:
+                print("[!] Виявлено передачу паролів через HTTP!")
+                last_http_alert = line
+                break
+    # Credentials
+    cred_log = f"{OUTPUT_DIR}/http_credentials.txt"
+    if os.path.exists(cred_log):
+        lines = tail(cred_log, 5)
+        for line in lines:
+            if line.strip() and line != last_cred_alert:
+                print("[!] Виявлено можливі логіни/паролі у HTTP-трафіку!")
+                last_cred_alert = line
+                break
+
+# ==================== ГОЛОВНА ФУНКЦІЯ ====================
+def main():
+    print("=== НАВЧАЛЬНИЙ ІНСТРУМЕНТ МЕРЕЖЕВОЇ БЕЗПЕКИ ===")
+    print("Цей скрипт демонструє:\n1. Детекцію ARP-спуфінгу\n2. Аналіз HTTP-трафіку (логіни/паролі, файли)\n3. Пошук підозрілих дій")
+    t1 = threading.Thread(target=arp_monitor, daemon=True)
+    t2 = threading.Thread(target=http_sniffer, daemon=True)
+    t1.start()
+    t2.start()
+    try:
+        while True:
+            detect_suspicious_activity()
+            time.sleep(30)
+    except KeyboardInterrupt:
+        print("\n[+] Скрипт зупинено. Логи збережено у папці", OUTPUT_DIR)
+
+if __name__ == "__main__":
+    main()
