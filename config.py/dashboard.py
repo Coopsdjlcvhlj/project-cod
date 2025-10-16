@@ -1,4 +1,4 @@
-# dashboard.py
+
 from flask import Flask, jsonify, render_template_string
 import os, json
 from config import LOG_DIR
@@ -38,7 +38,7 @@ def read_last_lines(path, n=200):
 def index():
     path = os.path.join(LOG_DIR, "events.jsonl")
     lines = read_last_lines(path, 300)
-    # pretty print
+    
     parsed = "\n".join(lines)
     return render_template_string(TEMPLATE, logs=parsed)
 

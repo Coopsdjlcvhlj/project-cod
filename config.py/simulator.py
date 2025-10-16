@@ -1,4 +1,4 @@
-# simulator.py
+
 import time, random
 from correlator import push_event
 from logger_setup import logger

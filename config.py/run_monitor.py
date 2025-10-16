@@ -1,4 +1,4 @@
-# run_monitor.py
+
 import threading, time
 from logger_setup import logger
 from resource_monitor import monitor
@@ -7,7 +7,7 @@ from simulator import run_demo_loop
 import argparse
 import os
 
-# Імпорт модулів, які можуть не запускатися в тестовому середовищі
+
 try:
     from arp_monitor import start_arp_monitor
 except Exception as e:
@@ -27,17 +27,17 @@ def start_dashboard():
 def main(args):
     threads = []
 
-    # Resource monitor thread
+    
     t_res = threading.Thread(target=monitor, args=(10,), daemon=True)
     threads.append(t_res)
     t_res.start()
 
-    # Dashboard
+    
     t_dash = threading.Thread(target=start_dashboard, daemon=True)
     threads.append(t_dash)
     t_dash.start()
 
-    # ARP monitor (если доступен)
+    
     if start_arp_monitor and not args.no_arp:
         t_arp = threading.Thread(target=start_arp_monitor, kwargs={"iface": args.iface}, daemon=True)
         threads.append(t_arp)
@@ -45,7 +45,7 @@ def main(args):
     else:
         logger.info("ARP monitor skipped or unavailable")
 
-    # HTTP sniffer
+    
     if start_http_sniffer and not args.no_http:
         t_http = threading.Thread(target=start_http_sniffer, kwargs={"iface": args.iface}, daemon=True)
         threads.append(t_http)
@@ -53,7 +53,7 @@ def main(args):
     else:
         logger.info("HTTP sniffer skipped or unavailable")
 
-    # Симулятор (опціонально для тестів)
+    
     if args.simulate:
         t_sim = threading.Thread(target=run_demo_loop, kwargs={"interval": 3, "iterations": 10}, daemon=True)
         threads.append(t_sim)

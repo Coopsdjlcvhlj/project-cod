@@ -1,4 +1,4 @@
-# logger_setup.py
+
 import logging, logging.handlers, json, os
 from config import LOG_DIR
 
@@ -18,7 +18,7 @@ logger.setLevel(logging.INFO)
 handler = logging.handlers.RotatingFileHandler(os.path.join(LOG_DIR, "events.jsonl"), maxBytes=5*1024*1024, backupCount=5, encoding="utf-8")
 handler.setFormatter(JsonFormatter())
 logger.addHandler(handler)
-# console
+
 ch = logging.StreamHandler()
 ch.setFormatter(JsonFormatter())
 logger.addHandler(ch)

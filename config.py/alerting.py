@@ -1,4 +1,4 @@
-# alerting.py
+
 import time
 from logger_setup import logger
 from config import ALERT_THROTTLE_SECONDS
@@ -7,9 +7,8 @@ import requests
 
 _last_alert_time = 0
 
-TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")  # помістіть токен у середовище
-TG_CHAT_ID = os.getenv("TG_CHAT_ID")      # чат id для повідомлень
-
+TG_BOT_TOKEN = os.getenv("TG_BOT_TOKEN")  
+TG_CHAT_ID = os.getenv("TG_CHAT_ID")      
 def alert(message: str, severity: str = "medium"):
     """
     message: текст алерта
@@ -22,10 +21,10 @@ def alert(message: str, severity: str = "medium"):
         return
     _last_alert_time = now
 
-    # Лог у файл та консоль
+    
     logger.warning("ALERT: " + message, extra={"extra":{"severity": severity}})
 
-    # Telegram (якщо налаштовано)
+    
     if TG_BOT_TOKEN and TG_CHAT_ID:
         try:
             send_telegram(TG_BOT_TOKEN, TG_CHAT_ID, f"[{severity.upper()}] {message}")

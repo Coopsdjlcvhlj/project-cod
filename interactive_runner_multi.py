@@ -1,8 +1,3 @@
-#!/usr/bin/env python3
-"""
-Інтерактивний запуск Python-файлів по одному або декілька одночасно.
-"""
-
 import sys
 import subprocess
 from pathlib import Path
@@ -39,7 +34,7 @@ def run_file(py_path: Path, log_path: Path):
             print(f"Помилка при запуску {py_path.name}: {e}")
 
 def parse_selection(input_str: str, max_index: int):
-    """Парсить введення користувача, підтримує коми і діапазони."""
+   
     selections = set()
     tokens = input_str.split(",")
     for tok in tokens:
@@ -56,7 +51,7 @@ def parse_selection(input_str: str, max_index: int):
                 selections.add(idx)
             except:
                 pass
-    # залишити тільки валідні індекси
+  
     return sorted(i for i in selections if 0 <= i < max_index)
 
 def main():
@@ -88,13 +83,13 @@ def main():
             if not indices:
                 print("Невірний ввід. Спробуйте ще раз.")
                 continue
-            # формуємо список файлів для запуску
+           
             to_run = [remaining[i] for i in indices]
-            # видаляємо вибрані з remaining (спочатку індекси у зворотньому порядку)
+           
             for i in sorted(indices, reverse=True):
                 remaining.pop(i)
 
-        # запуск файлів
+      
         for f in to_run:
             logfile = log_dir / (f.name.replace("/", "_") + ".log")
             run_file(f, logfile)

@@ -1,10 +1,10 @@
-# utils.py
+
 import re, hashlib, os
 from config import HTTP_CREDENTIALS_FILE
 import json
 
 def mask_sensitive(s: str) -> str:
-    # просте маскування password-like полів
+ 
     return re.sub(r'(?i)(password|passwd|pwd|pass)=([^&\s]+)', lambda m: f"{m.group(1)}=***", s)
 
 def sha256_file(path):

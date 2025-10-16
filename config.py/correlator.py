@@ -1,15 +1,13 @@
-# correlator.py
 import time
 from logger_setup import logger
 from alerting import alert
-# Простий кеш: recent events
-RECENT = []
-TTL = 60  # секунди для кореляції
 
+RECENT = []
+TTL = 60  
 def push_event(ev: dict):
     ev['time'] = time.time()
     RECENT.append(ev)
-    # при додаванні — очищаємо старі
+   
     _cleanup()
     _try_correlate(ev)
 
@@ -19,7 +17,7 @@ def _cleanup():
         RECENT.pop(0)
 
 def _try_correlate(ev):
-    # якщо ev типу arp -> шукати http_creds за тим же src ip
+ 
     if ev.get('type') == 'arp':
         candidates = [e for e in RECENT if e.get('type','').startswith('http') and e.get('src') == ev.get('src_ip')]
         if candidates:

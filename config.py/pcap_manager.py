@@ -1,4 +1,4 @@
-# pcap_manager.py
+
 import os, time
 from scapy.utils import PcapWriter
 from scapy.all import sniff
@@ -6,10 +6,7 @@ from config import PCAP_DIR, MAX_PCAP_SECONDS
 from logger_setup import logger
 
 def save_window(duration=MAX_PCAP_SECONDS, iface=None, prefix="event"):
-    """
-    Захопити пакети протягом duration секунд і записати у pcap-файл.
-    Повертає шлях до файлу або None при помилці.
-    """
+  
     ts = int(time.time())
     fname = os.path.join(PCAP_DIR, f"{prefix}_{ts}.pcap")
     try:
