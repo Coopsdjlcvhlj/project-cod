@@ -5677,3 +5677,28 @@ User-Agent: Microsoft-CryptoAPI...
 2025-09-14 22:01:00.598682: GET /filestreamingservice/files/86061e48-63b3-483f-8dac-609df0cbb238?P1=1757957240&P2=404&P3=2&P4=H6r3YoA1kvgzizFjXJFFVEXOejLddYsvSsDTVJBBHoAhwPb41p%2buKQBOa6uElYpJQZuqi6W%2fX1lEi422EJPp3g%3d%3d HTTP/...
 2025-09-14 22:01:03.723922: GET /filestreamingservice/files/86061e48-63b3-483f-8dac-609df0cbb238?P1=1757957240&P2=404&P3=2&P4=H6r3YoA1kvgzizFjXJFFVEXOejLddYsvSsDTVJBBHoAhwPb41p%2buKQBOa6uElYpJQZuqi6W%2fX1lEi422EJPp3g%3d%3d HTTP/...
 2025-09-14 22:01:04.777188: GET /filestreamingservice/files/86061e48-63b3-483f-8dac-609df0cbb238?P1=1757957240&P2=404&P3=2&P4=H6r3YoA1kvgzizFjXJFFVEXOejLddYsvSsDTVJBBHoAhwPb41p%2buKQBOa6uElYpJQZuqi6W%2fX1lEi422EJPp3g%3d%3d HTTP/...
+2025-10-16 21:59:47.821347: GET /msdownload/update/v3/static/trustedr/en/pinrulesstl.cab?1b4e27964a8854b6 HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Fri, 02 Jun 2017 17:39:05 GMT
+User-Agent: Microsoft-Cry...
+2025-10-16 21:59:47.824762: GET /msdownload/update/v3/static/trustedr/en/pinrulesstl.cab?1b4e27964a8854b6 HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Fri, 02 Jun 2017 17:39:05 GMT
+User-Agent: Microsoft-Cry...
+2025-10-16 22:13:51.424279: POST /api HTTP/1.1
+Host: 149.154.165.120:80
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 40
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate
+Accept-Language: ru-UA,en,*
+...
+2025-10-16 22:14:18.650008: POST /api HTTP/1.1
+Host: 149.154.167.223:80
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 176
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate
+Accept-Language: ru-UA,en,*...

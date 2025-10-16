@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Тест завантаження (cookie consent)</title>
+  <style>
+    body { font-family: Arial, sans-serif; padding: 20px; }
+    .cookie { position: fixed; bottom: 12px; left: 12px; right:12px; background:#fff; border:1px solid #ddd; padding:12px; border-radius:8px; display:flex; justify-content:space-between; align-items:center; gap:12px; }
+  </style>
+</head>
+<body>
+  <h1>Тест: завантаження файлів з перевіркою cookie</h1>
+
+  <p>
+    Натисніть <strong>Прийняти cookie</strong>, щоб встановити cookie `cookieConsent=allowed`.
+    Після цього ви зможете обрати та відправити файли.
+  </p>
+
+  <div>
+    <button id="accept">Прийняти</button>
+    <button id="decline">Відмовитись</button>
+  </div>
+
+  <form id="uploadForm" action="/upload" method="post" enctype="multipart/form-data" style="margin-top:20px;">
+    <input type="file" name="files" id="fileInput" multiple accept="image/*,video/*,audio/*,application/pdf" />
+    <br/><br/>
+    <button type="submit" id="submitBtn" disabled>Завантажити</button>
+  </form>
+
+  <div id="message" style="margin-top:12px;color:green;"></div>
+
+  <script>
+    const acceptBtn = document.getElementById('accept');
+    const declineBtn = document.getElementById('decline');
+    const submitBtn = document.getElementById('submitBtn');
+    const message = document.getElementById('message');
+
+    function setCookie(name, value, days=365) {
+      const d = new Date();
+      d.setTime(d.getTime() + days*24*60*60*1000);
+      document.cookie = `${name}=${encodeURIComponent(value)};path=/;expires=${d.toUTCString()};SameSite=Lax`;
+    }
+    function getCookie(name) {
+      const m = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return m ? decodeURIComponent(m[2]) : null;
+    }
+
+    function updateUI() {
+      if (getCookie('cookieConsent') === 'allowed') {
+        submitBtn.disabled = false;
+        message.textContent = 'Згода надана — ви можете завантажувати файли.';
+      } else {
+        submitBtn.disabled = true;
+        message.textContent = 'Згода не надана — доступ до завантаження вимкнено.';
+      }
+    }
+
+    acceptBtn.addEventListener('click', () => { setCookie('cookieConsent','allowed'); updateUI(); });
+    declineBtn.addEventListener('click', () => { setCookie('cookieConsent','denied'); updateUI(); });
+
+    // При завантаженні сторінки оновлюємо UI
+    document.addEventListener('DOMContentLoaded', updateUI);
+  </script>
+</body>
+</html>

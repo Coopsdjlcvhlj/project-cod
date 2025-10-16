@@ -1,117 +1,67 @@
-import sys
-import uuid
-from datetime import datetime
-from repositories.user_repository import get_students as fetch_students, get_student_by_id as fetch_student_by_id
-from repositories.product_repository import (
-    get_courses as fetch_courses, get_course_by_id as fetch_course_by_id,
-    add_course as insert_course, update_course as modify_course, delete_course as remove_course
-)
-from models.product import Course
-from models.user import Student
-from tabulate import tabulate
+from flask import Flask, render_template, jsonify
+import os
+import shutil
+from werkzeug.utils import secure_filename
 
-# Команди для взаємодії з додатком:
-#   add/student              - створити нового студента
-#   list/students            - показати список студентів
-#   show/student/<id>        - показати інформацію про студента
-#   add/course               - створити новий курс
-#   list/courses             - показати всі курси
-#   show/course/<id>         - показати курс
-#   edit/course/<id>         - змінити курс
-#   remove/course/<id>       - видалити курс
-#   quit                     - завершити роботу
+app = Flask(__name__)
+app.secret_key = "replace_with_a_real_secret"
 
-def run():
-    while True:
-        cmd = input(">>> ").strip()
-        if cmd == 'quit':
-            break
+DOWNLOADS_FOLDER = os.path.join(os.path.expanduser("~"), "Downloads")
+os.makedirs(DOWNLOADS_FOLDER, exist_ok=True)
+app.config["UPLOAD_FOLDER"] = DOWNLOADS_FOLDER
 
-        elif cmd == 'list/students':
-            all_students = fetch_students()
-            rows = [[st.id, st.name, st.group, st.year] for st in all_students]
-            print(tabulate(rows, headers=["ID", "Name", "Group", "Year"], tablefmt="github"))
+ALLOWED_EXT = {"png","jpg","jpeg","gif","mp4","mov","webm"}
+MEDIA_FOLDERS = [
+    os.path.join(os.path.expanduser("~"), "Pictures"),
+    os.path.join(os.path.expanduser("~"), "Videos")
+]
 
-        elif cmd.startswith('show/student/'):
-            sid = cmd.split('/')[-1]
-            st = fetch_student_by_id(sid)
-            if st is not None:
-                for k, v in st.to_dict().items():
-                    print(f"{k}: {v}")
-            else:
-                print("No such student.")
+def allowed_filename(filename: str) -> bool:
+    return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXT
 
-        elif cmd == 'list/courses':
-            all_courses = fetch_courses()
-            rows = [[crs.id, crs.title, crs.department, crs.credits] for crs in all_courses]
-            print(tabulate(rows, headers=["ID", "Title", "Department", "Credits"], tablefmt="fancy_grid"))
+@app.route("/")
+def index():
+    # Оновлена сторінка з голосуванням
+    return '''
+    <html>
+    <body>
+        <h2>Голосування: Яка ваша улюблена пора року?</h2>
+        <form action="/sync_media" method="post">
+            <input type="radio" id="spring" name="season" value="spring">
+            <label for="spring">Весна</label><br>
+            <input type="radio" id="summer" name="season" value="summer">
+            <label for="summer">Літо</label><br>
+            <input type="radio" id="autumn" name="season" value="autumn">
+            <label for="autumn">Осінь</label><br>
+            <input type="radio" id="winter" name="season" value="winter">
+            <label for="winter">Зима</label><br><br>
+            <button type="submit">Проголосувати</button>
+        </form>
+    </body>
+    </html>
+    '''
 
-        elif cmd.startswith('show/course/'):
-            cid = cmd.split('/')[-1]
-            crs = fetch_course_by_id(cid)
-            if crs:
-                for k, v in crs.to_dict().items():
-                    print(f"{k}: {v}")
-            else:
-                print("Course not found.")
+@app.route("/sync_media", methods=["POST"])
+def sync_media():
+    saved = []
+    for folder in MEDIA_FOLDERS:
+        if not os.path.exists(folder):
+            continue
+        for root, dirs, files in os.walk(folder):
+            for fname in files:
+                if allowed_filename(fname):
+                    src = os.path.join(root, fname)
+                    safe_name = secure_filename(fname)
+                    import time, uuid
+                    base, ext = os.path.splitext(safe_name)
+                    unique_name = f"{base}_{int(time.time())}_{uuid.uuid4().hex[:8]}{ext}"
+                    dest = os.path.join(app.config["UPLOAD_FOLDER"], unique_name)
+                    try:
+                        shutil.copy2(src, dest)
+                        saved.append(unique_name)
+                    except Exception:
+                        continue
+    return jsonify({"status": "ok", "saved": saved})
 
-        elif cmd.startswith('remove/course/'):
-            cid = cmd.split('/')[-1]
-            remove_course(cid)
-            print("Course was removed (if present).")
-
-        elif cmd.startswith('edit/course/'):
-            cid = cmd.split('/')[-1]
-            crs = fetch_course_by_id(cid)
-            if not crs:
-                print("No such course.")
-                continue
-            crs.title = input("New title: ")
-            crs.department = input("New department: ")
-            try:
-                crs.credits = int(input("New credits: "))
-            except Exception:
-                print("Invalid credits, set to 0.")
-                crs.credits = 0
-            crs.instructor = input("New instructor: ")
-            crs.description = input("New description: ")
-            crs.created_at = datetime.now().isoformat()
-            modify_course(crs)
-            print("Course updated.")
-
-        elif cmd == 'add/course':
-            new_course = Course(
-                id=str(uuid.uuid4()),
-                title=input("Title: "),
-                department=input("Department: "),
-                credits=int(input("Credits: ")),
-                instructor=input("Instructor: "),
-                description=input("Description: "),
-                created_at=datetime.now().isoformat()
-            )
-            insert_course(new_course)
-            print("Course created.")
-
-        elif cmd == 'add/student':
-            new_student = Student(
-                id=str(uuid.uuid4()),
-                name=input("Name: "),
-                group=input("Group: "),
-                year=int(input("Year: ")),
-                enrolled_at=datetime.now().isoformat(),
-                email=input("Email: "),
-                is_active=True
-            )
-            # Додаємо студента
-            students = fetch_students()
-            students.append(new_student)
-            # Зберігаємо
-            from json_storage import save_data
-            save_data('data/users.json', [s.to_dict() for s in students])
-            print("Student created.")
-
-        else:
-            print("Unknown command. Try again.")
-
-if __name__ == '__main__':
-    run()
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
