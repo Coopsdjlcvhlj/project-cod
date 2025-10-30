@@ -1,0 +1,6 @@
+flask
+scapy
+python-dotenv
+prometheus-client
+requests
+pytest

@@ -3,9 +3,37 @@ import threading
 import time
 import re
 import zipfile
+import glob
+import io
+import logging
+from logging.handlers import RotatingFileHandler
+import signal
+import argparse
 from datetime import datetime
 from scapy.all import sniff, ARP, TCP, Raw, IP
-from flask import Flask, render_template_string, request, redirect, make_response, send_file
+from flask import Flask, render_template_string, request, redirect, make_response, send_file, g, jsonify
+from dotenv import load_dotenv
+# замінено прямий імпорт prometheus_client на опціональний (щоб уникнути помилок при відсутності пакета)
+try:
+    # Підказка для Pylance/Pyright: якщо пакет не встановлений у віртуальному оточенні,
+    # ця директива вимикає повідомлення про відсутній імпорт.
+    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  # type: ignore[reportMissingImports]
+    METRICS_ENABLED = True
+except Exception:
+    METRICS_ENABLED = False
+    # прості no-op реалізації для безпечного виконання без пакету
+    class _NoopMetric:
+        def labels(self, *args, **kwargs):
+            return self
+        def observe(self, *args, **kwargs):
+            return None
+        def inc(self, *args, **kwargs):
+            return None
+    Counter = lambda *a, **k: _NoopMetric()
+    Histogram = lambda *a, **k: _NoopMetric()
+    def generate_latest():
+        return b""
+    CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
 OUTPUT_DIR = "security_logs"
 FILES_DIR = os.path.join(OUTPUT_DIR, "captured_files")
@@ -22,24 +50,61 @@ FILENAME_RE = re.compile(
 USERNAME_RE = re.compile(r'username=([^&\s]*)')
 PASSWORD_RE = re.compile(r'password=([^&\s]*)')
 
+# global state
 last_arp_alert = ""
 last_http_alert = ""
 last_cred_alert = ""
 log_lock = threading.Lock()
+stop_event = threading.Event()  # used for graceful shutdown
 
+# Prometheus metrics (можуть бути no-op якщо пакет не встановлено)
+REQUEST_COUNT = Counter("app_requests_total", "Total HTTP requests", ["method", "endpoint", "http_status"])
+REQUEST_LATENCY = Histogram("app_request_latency_seconds", "Latency of HTTP requests in seconds", ["endpoint"])
+
+# simple config from .env + env
+def load_config():
+    load_dotenv()
+    cfg = {
+        "FLASK_HOST": os.getenv("FLASK_HOST", "0.0.0.0"),
+        "FLASK_PORT": int(os.getenv("FLASK_PORT", "5000")),
+        "LOG_FILE": os.getenv("LOG_FILE", os.path.join(OUTPUT_DIR, "app.log")),
+        "LOG_LEVEL": os.getenv("LOG_LEVEL", "INFO"),
+        "MONITOR_INTERVAL": int(os.getenv("MONITOR_INTERVAL", "30")),
+    }
+    return cfg
+
+def init_logger(log_file, level="INFO"):
+    lvl = getattr(logging, level.upper(), logging.INFO)
+    logger = logging.getLogger()
+    logger.setLevel(lvl)
+    # avoid duplicate handlers in re-imports
+    if not any(isinstance(h, RotatingFileHandler) for h in logger.handlers):
+        fh = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=3, encoding="utf-8")
+        fh.setLevel(lvl)
+        fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(fh)
+    # console handler
+    if not any(isinstance(h, logging.StreamHandler) for h in logger.handlers):
+        ch = logging.StreamHandler()
+        ch.setLevel(lvl)
+        ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+        logger.addHandler(ch)
+    logging.info("Logger initialized (file=%s level=%s)", log_file, level)
+
+# modify sniffers to observe stop_event via stop_filter
 def arp_monitor():
     def arp_callback(packet):
         if packet.haslayer(ARP) and packet[ARP].op == 2:
             msg = f"{packet[ARP].psrc} claims to be {packet[ARP].hwsrc}"
-            print(f"[!] ARP-відповідь: {packet[ARP].psrc} -> {packet[ARP].pdst}")
+            logging.warning("ARP-відповідь: %s -> %s", packet[ARP].psrc, packet[ARP].pdst)
             try:
                 with log_lock:
                     with open(f"{OUTPUT_DIR}/arp_log.txt", "a", encoding="utf-8") as f:
                         f.write(f"{datetime.now()}: {msg}\n")
             except Exception as e:
-                print(f"[!] Помилка запису ARP-логу: {e}")
-    print("[*] Запуск ARP-монітора...")
-    sniff(filter="arp", prn=arp_callback, store=0)
+                logging.exception("Помилка запису ARP-логу: %s", e)
+    logging.info("Запуск ARP-монітора...")
+    sniff(filter="arp", prn=arp_callback, store=0, stop_filter=lambda p: stop_event.is_set())
 
 def save_file(filename, data):
     path = os.path.join(FILES_DIR, filename)
@@ -105,23 +170,34 @@ def http_sniffer():
                 if ("GET /" in decoded_payload or "POST /" in decoded_payload) and packet.haslayer(IP):
                     src_ip = packet[IP].src
                     dst_ip = packet[IP].dst
-                    print(f"\n[HTTP] {src_ip} -> {dst_ip}")
-                    print("-" * 30)
+                    logging.info("[HTTP] %s -> %s", src_ip, dst_ip)
                     headers = decoded_payload.split('\r\n\r\n')[0]
-                    print(headers)
+                    logging.debug(headers)
                     parse_http_payload(decoded_payload)
                     try:
                         with log_lock:
                             with open(f"{OUTPUT_DIR}/http_log.txt", "a", encoding="utf-8") as f:
                                 f.write(f"{datetime.now()}: {decoded_payload[:200]}...\n")
                     except Exception as e:
-                        print(f"[!] Помилка запису HTTP-логу: {e}")
+                        logging.exception("Помилка запису HTTP-логу: %s", e)
                 if b"HTTP/1." in payload:
                     extract_files_from_http(payload)
             except Exception as e:
-                print(f"[!] Помилка при обробці HTTP-пакету: {e}")
-    print("[*] Запуск HTTP-сниффера (логіни/паролі + файли)...")
-    sniff(filter="tcp port 80 or tcp port 8080", prn=http_callback, store=0)
+                logging.exception("Помилка при обробці HTTP-пакету: %s", e)
+    logging.info("Запуск HTTP-сниффера (логіни/паролі + файли)...")
+    sniff(filter="tcp port 80 or tcp port 8080", prn=http_callback, store=0, stop_filter=lambda p: stop_event.is_set())
+
+def scheduler_loop(interval):
+    """
+    Періодично викликає detect_suspicious_activity.
+    """
+    logging.info("Запуск планувальника з інтервалом %d секунд...", interval)
+    while not stop_event.is_set():
+        detect_suspicious_activity()
+        # Чекаємо, доки не спрацює stop_event або не закінчиться інтервал
+        stop_event.wait(interval)
+
+# ---
 
 def tail(filename, n=20):
     try:
@@ -367,55 +443,135 @@ def vote():
         VOTES[v] += 1
     return redirect("/")
 
-def run_flask():
-    # Додаємо підтримку зовнішнього доступу (через будь-яку мережу)
-    # Для цього потрібно:
-    # 1. Запускати Flask на host="0.0.0.0"
-    # 2. Вказати порт (наприклад, 5000)
-    # 3. Відкрити порт 5000 у брандмауері/роутері (port forwarding)
-    # 4. Використовувати вашу зовнішню (публічну) IP-адресу для доступу ззовні
+@app.before_request
+def before():
+    g.start_time = time.time()
+
+@app.after_request
+def after(response):
+    try:
+        latency = time.time() - getattr(g, "start_time", time.time())
+        endpoint = request.endpoint or "unknown"
+        REQUEST_LATENCY.labels(endpoint=endpoint).observe(latency)
+        REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, http_status=response.status_code).inc()
+    except Exception:
+        logging.exception("Metrics middleware error")
+    return response
+
+# health and docs endpoints + metrics
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({"status": "ok", "uptime": int(time.time())}), 200
+
+# Додаємо readiness endpoint — перевіряє чи процес не в стані зупинки
+@app.route("/ready", methods=["GET"])
+def ready():
+    # якщо stop_event виставлений — сервер почав завершення роботи
+    if stop_event.is_set():
+        return jsonify({"status": "not_ready", "reason": "shutting_down"}), 503
+    return jsonify({"status": "ready"}), 200
+
+@app.route("/metrics")
+def metrics():
+    if not METRICS_ENABLED:
+        # зрозуміле повідомлення коли пакет prometheus_client недоступний
+        return jsonify({"error": "prometheus_client not available. Install via: pip install prometheus-client"}), 503
+    return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
+
+@app.route("/docs")
+def docs():
+    # простий список endpoint-ів
+    routes = []
+    for rule in app.url_map.iter_rules():
+        routes.append({"endpoint": rule.endpoint, "rule": str(rule), "methods": list(rule.methods)})
+    return jsonify({"routes": routes})
+
+# custom error handlers
+@app.errorhandler(404)
+def not_found(e):
+    return jsonify({"error": "not found"}), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    logging.exception("Internal server error: %s", e)
+    return jsonify({"error": "internal server error"}), 500
+
+def run_flask(host, port):
     import socket
     import requests
     try:
-        # Отримати локальну IP-адресу
         local_ip = socket.gethostbyname(socket.gethostname())
     except Exception:
         local_ip = "127.0.0.1"
     try:
-        # Отримати зовнішню (публічну) IP-адресу
-        public_ip = requests.get("https://api.ipify.org").text
+        public_ip = requests.get("https://api.ipify.org", timeout=2).text
     except Exception:
         public_ip = "<ваша_зовнішня_IP_адреса>"
 
-    print(f"[+] Веб-інтерфейс доступний у вашій локальній мережі: http://{local_ip}:5000/")
-    print(f"[+] Для доступу з будь-якої мережі (через Інтернет): http://{public_ip}:5000/")
-    print("[*] Для зовнішнього доступу відкрийте порт 5000 у вашому роутері (port forwarding)!")
-    app.run(host="0.0.0.0", port=5000, debug=False, use_reloader=False)
+    logging.info("Веб-інтерфейс доступний у вашій локальній мережі: http://%s:%s/", local_ip, port)
+    logging.info("Для доступу з будь-якої мережі (через Інтернет): http://%s:%s/", public_ip, port)
+    app.run(host=host, port=port, debug=False, use_reloader=False)
 
-def main():
-    print("=== НАВЧАЛЬНИЙ ІНСТРУМЕНТ МЕРЕЖЕВОЇ БЕЗПЕКИ ===")
-    print("Цей скрипт демонструє:\n1. Детекцію ARP-спуфінгу\n2. Аналіз HTTP-трафіку (логіни/паролі, файли)\n3. Пошук підозрілих дій\n4. Веб-інтерфейс для голосування та завантаження матеріалів")
-    threading.Thread(target=arp_monitor, daemon=True).start()
-    threading.Thread(target=http_sniffer, daemon=True).start()
-    threading.Thread(target=run_flask, daemon=True).start()
-    print("[*] Для перегляду веб-інтерфейсу відкрийте у браузері: http://127.0.0.1:5000/")
+def main(run_arp=True, run_http=True, run_flask_srv=True, monitor_interval=30, mode="dev"):
+    cfg = load_config()
+    init_logger(cfg["LOG_FILE"], cfg["LOG_LEVEL"])
+    logging.info("Starting main (mode=%s)", mode)
+
+    threads = []
+
+    if run_arp:
+        t = threading.Thread(target=arp_monitor, name="arp_monitor", daemon=True)
+        t.start()
+        threads.append(t)
+    if run_http:
+        t = threading.Thread(target=http_sniffer, name="http_sniffer", daemon=True)
+        t.start()
+        threads.append(t)
+    # scheduler for periodic detection
+    sched = threading.Thread(target=scheduler_loop, args=(monitor_interval,), name="scheduler", daemon=True)
+    sched.start()
+    threads.append(sched)
+
+    if run_flask_srv:
+        t = threading.Thread(target=run_flask, args=(cfg["FLASK_HOST"], cfg["FLASK_PORT"]), name="flask", daemon=True)
+        t.start()
+        threads.append(t)
+
+    logging.info("All background components started. Open http://127.0.0.1:%s/ if flask enabled", cfg["FLASK_PORT"])
     try:
-        while True:
-            detect_suspicious_activity()
-            time.sleep(30)
+        # wait until stop_event set by signal handler or KeyboardInterrupt
+        while not stop_event.is_set():
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("\n[+] Скрипт зупинено. Логи збережено у папці", OUTPUT_DIR)
+        logging.info("KeyboardInterrupt received, shutting down...")
+        stop_event.set()
+    finally:
+        logging.info("Waiting for threads to finish...")
+        # give threads a moment to stop
+        time.sleep(1)
+        logging.info("Shutdown complete.")
+
+# signal handlers for graceful shutdown
+def _handle_signal(signum, frame):
+    logging.info("Received signal %s, initiating shutdown...", signum)
+    stop_event.set()
+
+signal.signal(signal.SIGINT, _handle_signal)
+signal.signal(signal.SIGTERM, _handle_signal)
 
 if __name__ == "__main__":
-    import glob
-    import io
-    # Якщо при git push отримуєте:
-    #   error: src refspec main does not match any
-    # Це означає, що гілка main ще не створена локально.
-    # Створіть коміт і гілку main:
-    #   git add .
-    #   git commit -m "first commit"
-    #   git branch -M main
-    #   git push -u origin main
-    # Якщо ви вже у гілці main, але немає комітів, зробіть перший коміт перед push.
-    main()
+    parser = argparse.ArgumentParser(description="Network security toolkit")
+    parser.add_argument("--mode", choices=["dev", "test", "prod"], default="dev")
+    parser.add_argument("--no-arp", action="store_true", help="Disable ARP monitor")
+    parser.add_argument("--no-http", action="store_true", help="Disable HTTP sniffer")
+    parser.add_argument("--no-flask", action="store_true", help="Disable Flask web UI")
+    parser.add_argument("--interval", type=int, default=30, help="Monitor interval seconds")
+    args = parser.parse_args()
+
+    cfg = load_config()
+    # merge CLI and cfg
+    run_arp = not args.no_arp
+    run_http = not args.no_http
+    run_flask_srv = not args.no_flask
+
+    main(run_arp=run_arp, run_http=run_http, run_flask_srv=run_flask_srv, monitor_interval=args.interval, mode=args.mode)

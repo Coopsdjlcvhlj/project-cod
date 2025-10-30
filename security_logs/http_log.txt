@@ -5702,3 +5702,60 @@ Content-Length: 176
 Connection: Keep-Alive
 Accept-Encoding: gzip, deflate
 Accept-Language: ru-UA,en,*...
+2025-10-16 22:47:42.463447: GET /r/r1.crl HTTP/1.1
+Cache-Control: max-age = 3000
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Thu, 03 Apr 2025 14:18:00 GMT
+User-Agent: Microsoft-CryptoAPI/10.0
+Host: c.pki.goog
+
+...
+2025-10-16 22:47:42.481612: GET / HTTP/1.1
+Cache-Control: max-age = 3600
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Tue, 09 Sep 2025 21:20:19 GMT
+If-None-Match: "68c09a13-2de"
+User-Agent: Microsoft-CryptoAPI/10....
+2025-10-16 22:47:42.506912: GET /r/gsr1.crl HTTP/1.1
+Cache-Control: max-age = 3000
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Tue, 07 Oct 2025 18:25:17 GMT
+User-Agent: Microsoft-CryptoAPI/10.0
+Host: c.pki.goog
+...
+2025-10-16 22:47:42.530771: GET /r/r4.crl HTTP/1.1
+Cache-Control: max-age = 3000
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Thu, 03 Apr 2025 14:18:00 GMT
+User-Agent: Microsoft-CryptoAPI/10.0
+Host: c.pki.goog
+
+...
+2025-10-16 22:47:42.594558: GET /msdownload/update/v3/static/trustedr/en/authrootstl.cab?06ea83e2621297d5 HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Thu, 28 Aug 2025 21:00:38 GMT
+If-None-Match: "48ea40ce5...
+2025-10-16 22:49:10.821513: POST /api HTTP/1.1
+Host: 149.154.167.223:80
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 132
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate
+Accept-Language: ru-UA,en,*...
+2025-10-17 09:13:49.202452: GET /MFEwTzBNMEswSTAJBgUrDgMCGgUABBSAUQYBMq2awn1Rh6Doh%2FsBYgFV7gQUA95QNVbRTLtm8KPiGxvDl7I90VUCEAJ0LqoXyo4hxxe7H%2Fz9DKA%3D HTTP/1.1
+Cache-Control: max-age = 6008
+Connection: Keep-Alive
+Accept: */*...
+2025-10-17 09:21:45.215919: POST /api HTTP/1.1
+Host: 149.154.167.223:80
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 88
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate
+Accept-Language: ru-UA,en,*
+...
