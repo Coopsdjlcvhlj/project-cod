@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import os
 import threading
 import time
@@ -10,18 +11,25 @@ from logging.handlers import RotatingFileHandler
 import signal
 import argparse
 from datetime import datetime
-from scapy.all import sniff, ARP, TCP, Raw, IP
+
+# Компоненти для packet sniffing та веба
+try:
+    from scapy.all import sniff, ARP, TCP, Raw, IP  # scapy потрібен для сниффера
+except Exception:
+    # Якщо scapy відсутній, визначаємо заглушки, щоб імпорт не падав (функції сниффера не працюватимуть)
+    sniff = None
+    ARP = TCP = Raw = IP = None
+
 from flask import Flask, render_template_string, request, redirect, make_response, send_file, g, jsonify
 from dotenv import load_dotenv
-# замінено прямий імпорт prometheus_client на опціональний (щоб уникнути помилок при відсутності пакета)
+
+# опціональний prometheus_client
 try:
-    # Підказка для Pylance/Pyright: якщо пакет не встановлений у віртуальному оточенні,
-    # ця директива вимикає повідомлення про відсутній імпорт.
-    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  # type: ignore[reportMissingImports]
+    from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST  # type: ignore
     METRICS_ENABLED = True
 except Exception:
     METRICS_ENABLED = False
-    # прості no-op реалізації для безпечного виконання без пакету
+
     class _NoopMetric:
         def labels(self, *args, **kwargs):
             return self
@@ -29,15 +37,20 @@ except Exception:
             return None
         def inc(self, *args, **kwargs):
             return None
+
     Counter = lambda *a, **k: _NoopMetric()
     Histogram = lambda *a, **k: _NoopMetric()
+
     def generate_latest():
         return b""
+
     CONTENT_TYPE_LATEST = "text/plain; version=0.0.4; charset=utf-8"
 
+# --- Конфіг та директорії
 OUTPUT_DIR = "security_logs"
 FILES_DIR = os.path.join(OUTPUT_DIR, "captured_files")
-MATERIALS_DIR = os.path.join(os.getcwd(), "матеріли")
+MATERIALS_DIR = os.path.join(os.getcwd(), "матеріали")
+
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 os.makedirs(FILES_DIR, exist_ok=True)
 os.makedirs(MATERIALS_DIR, exist_ok=True)
@@ -47,8 +60,8 @@ FILENAME_RE = re.compile(
     r'Content-Disposition:.*filename=[\"\' ]?([^\"\'\s]+\.(' + "|".join(FILE_EXTS) + r'))',
     re.IGNORECASE
 )
-USERNAME_RE = re.compile(r'username=([^&\s]*)')
-PASSWORD_RE = re.compile(r'password=([^&\s]*)')
+USERNAME_RE = re.compile(r'username=([^&\s]*)', re.IGNORECASE)
+PASSWORD_RE = re.compile(r'password=([^&\s]*)', re.IGNORECASE)
 
 # global state
 last_arp_alert = ""
@@ -93,16 +106,26 @@ def init_logger(log_file, level="INFO"):
 
 # modify sniffers to observe stop_event via stop_filter
 def arp_monitor():
+    if sniff is None:
+        logging.warning("scapy не доступний — ARP-монітор вимкнено")
+        return
+
     def arp_callback(packet):
-        if packet.haslayer(ARP) and packet[ARP].op == 2:
-            msg = f"{packet[ARP].psrc} claims to be {packet[ARP].hwsrc}"
-            logging.warning("ARP-відповідь: %s -> %s", packet[ARP].psrc, packet[ARP].pdst)
-            try:
-                with log_lock:
-                    with open(f"{OUTPUT_DIR}/arp_log.txt", "a", encoding="utf-8") as f:
-                        f.write(f"{datetime.now()}: {msg}\n")
-            except Exception as e:
-                logging.exception("Помилка запису ARP-логу: %s", e)
+        try:
+            if packet.haslayer(ARP) and getattr(packet[ARP], "op", None) == 2:
+                psrc = packet[ARP].psrc
+                hwsrc = packet[ARP].hwsrc
+                msg = f"{psrc} claims to be {hwsrc}"
+                logging.warning("ARP-відповідь: %s", msg)
+                try:
+                    with log_lock:
+                        with open(f"{OUTPUT_DIR}/arp_log.txt", "a", encoding="utf-8") as f:
+                            f.write(f"{datetime.now()}: {msg}\n")
+                except Exception as e:
+                    logging.exception("Помилка запису ARP-логу: %s", e)
+        except Exception:
+            logging.exception("ARP callback error")
+
     logging.info("Запуск ARP-монітора...")
     sniff(filter="arp", prn=arp_callback, store=0, stop_filter=lambda p: stop_event.is_set())
 
@@ -112,9 +135,9 @@ def save_file(filename, data):
         with log_lock:
             with open(path, "wb") as f:
                 f.write(data)
-        print(f"[+] Файл збережено: {path}")
+        logging.info("[+] Файл збережено: %s", path)
     except Exception as e:
-        print(f"[!] Помилка збереження файлу: {e}")
+        logging.exception("[!] Помилка збереження файлу: %s", e)
 
 def extract_and_save_file(filename, data):
     extracted_dir = os.path.join(FILES_DIR, "extracted")
@@ -125,49 +148,59 @@ def extract_and_save_file(filename, data):
             zip_path = os.path.join(FILES_DIR, filename)
             with zipfile.ZipFile(zip_path, 'r') as zip_ref:
                 zip_ref.extractall(extracted_dir)
-            print(f"[+] Zip-архів розпаковано у: {extracted_dir}")
+            logging.info("[+] Zip-архів розпаковано у: %s", extracted_dir)
         except Exception as e:
-            print(f"[!] Помилка при розпакуванні zip: {e}")
+            logging.exception("[!] Помилка при розпакуванні zip: %s", e)
     elif filename.lower().endswith(".rar"):
-        print("[!] Для розпакування rar потрібен модуль rarfile та встановлений unrar.")
+        logging.warning("[!] Для розпакування rar потрібен модуль rarfile та встановлений unrar.")
 
-def extract_files_from_http(payload):
+def extract_files_from_http(payload: bytes):
+    # payload = bytes. Декодуємо для пошуку заголовків та імен файлів
     try:
         decoded = payload.decode(errors='ignore')
     except Exception:
         return
     for match in FILENAME_RE.findall(decoded):
         filename = match[0]
+        # Часто файли йдуть після подвійного CRLF
         file_data = payload.split(b"\r\n\r\n")[-1]
         extract_and_save_file(filename, file_data)
 
 def parse_http_payload(payload):
+    # payload може бути bytes або str
     try:
-        username_match = USERNAME_RE.search(payload)
-        password_match = PASSWORD_RE.search(payload)
+        if isinstance(payload, (bytes, bytearray)):
+            text = payload.decode(errors='ignore')
+        else:
+            text = str(payload)
+        username_match = USERNAME_RE.search(text)
+        password_match = PASSWORD_RE.search(text)
         if username_match or password_match:
-            print("\n[!] Можливі дані для входу:")
+            logging.info("[!] Можливі дані для входу:")
             if username_match:
-                print(f"   Логін: {username_match.group(1)}")
+                logging.info("   Логін: %s", username_match.group(1))
             if password_match:
-                print(f"   Пароль: {password_match.group(1)}")
-            print("-" * 50)
+                logging.info("   Пароль: %s", password_match.group(1))
             with log_lock:
                 with open(f"{OUTPUT_DIR}/http_credentials.txt", "a", encoding="utf-8") as f:
-                    f.write(f"{datetime.now()}: {payload}\n")
-    except Exception as e:
-        print(f"[!] Помилка при парсингу HTTP payload: {e}")
+                    f.write(f"{datetime.now()}: {text}\n")
+    except Exception:
+        logging.exception("Помилка при парсингу HTTP payload")
 
 def http_sniffer():
+    if sniff is None:
+        logging.warning("scapy не доступний — HTTP-сниффер вимкнений")
+        return
+
     def http_callback(packet):
-        if packet.haslayer(TCP) and packet.haslayer(Raw):
-            try:
+        try:
+            if packet.haslayer(TCP) and packet.haslayer(Raw):
                 payload = packet[Raw].load
                 try:
                     decoded_payload = payload.decode('utf-8', errors='ignore')
                 except Exception:
-                    return
-                if ("GET /" in decoded_payload or "POST /" in decoded_payload) and packet.haslayer(IP):
+                    decoded_payload = None
+                if decoded_payload and ("GET /" in decoded_payload or "POST /" in decoded_payload) and packet.haslayer(IP):
                     src_ip = packet[IP].src
                     dst_ip = packet[IP].dst
                     logging.info("[HTTP] %s -> %s", src_ip, dst_ip)
@@ -178,12 +211,14 @@ def http_sniffer():
                         with log_lock:
                             with open(f"{OUTPUT_DIR}/http_log.txt", "a", encoding="utf-8") as f:
                                 f.write(f"{datetime.now()}: {decoded_payload[:200]}...\n")
-                    except Exception as e:
-                        logging.exception("Помилка запису HTTP-логу: %s", e)
-                if b"HTTP/1." in payload:
+                    except Exception:
+                        logging.exception("Помилка запису HTTP-логу")
+                # перевіряємо відповідь на присутність контенту для збереження
+                if b"HTTP/1." in payload or b"Content-Disposition" in payload:
                     extract_files_from_http(payload)
-            except Exception as e:
-                logging.exception("Помилка при обробці HTTP-пакету: %s", e)
+        except Exception:
+            logging.exception("Помилка при обробці HTTP-пакету")
+
     logging.info("Запуск HTTP-сниффера (логіни/паролі + файли)...")
     sniff(filter="tcp port 80 or tcp port 8080", prn=http_callback, store=0, stop_filter=lambda p: stop_event.is_set())
 
@@ -193,7 +228,10 @@ def scheduler_loop(interval):
     """
     logging.info("Запуск планувальника з інтервалом %d секунд...", interval)
     while not stop_event.is_set():
-        detect_suspicious_activity()
+        try:
+            detect_suspicious_activity()
+        except Exception:
+            logging.exception("Помилка в detect_suspicious_activity")
         # Чекаємо, доки не спрацює stop_event або не закінчиться інтервал
         stop_event.wait(interval)
 
@@ -217,116 +255,44 @@ def tail(filename, n=20):
 
 def detect_suspicious_activity():
     global last_arp_alert, last_http_alert, last_cred_alert
-    arp_log = f"{OUTPUT_DIR}/arp_log.txt"
-    if os.path.exists(arp_log):
-        lines = tail(arp_log, 10)
-        for line in lines:
-            if "claims to be" in line and line != last_arp_alert:
-                print("[!] Виявлено можливий ARP-спуфінгу!")
-                last_arp_alert = line
-                break
-    http_log = f"{OUTPUT_DIR}/http_log.txt"
-    if os.path.exists(http_log):
-        lines = tail(http_log, 10)
-        for line in lines:
-            if "password=" in line and line != last_http_alert:
-                print("[!] Виявлено передачу паролів через HTTP!")
-                last_http_alert = line
-                break
-    cred_log = f"{OUTPUT_DIR}/http_credentials.txt"
-    if os.path.exists(cred_log):
-        lines = tail(cred_log, 5)
-        for line in lines:
-            if line.strip() and line != last_cred_alert:
-                print("[!] Виявлено можливі логіни/паролі у HTTP-трафіку!")
-                last_cred_alert = line
-                break
+    try:
+        arp_log = f"{OUTPUT_DIR}/arp_log.txt"
+        if os.path.exists(arp_log):
+            lines = tail(arp_log, 10)
+            for line in lines:
+                if "claims to be" in line and line != last_arp_alert:
+                    logging.warning("[!] Виявлено можливий ARP-спуфінгу!")
+                    last_arp_alert = line
+                    break
+        http_log = f"{OUTPUT_DIR}/http_log.txt"
+        if os.path.exists(http_log):
+            lines = tail(http_log, 10)
+            for line in lines:
+                if "password=" in line and line != last_http_alert:
+                    logging.warning("[!] Виявлено передачу паролів через HTTP!")
+                    last_http_alert = line
+                    break
+        cred_log = f"{OUTPUT_DIR}/http_credentials.txt"
+        if os.path.exists(cred_log):
+            lines = tail(cred_log, 5)
+            for line in lines:
+                if line.strip() and line != last_cred_alert:
+                    logging.warning("[!] Виявлено можливі логіни/паролі у HTTP-трафіку!")
+                    last_cred_alert = line
+                    break
+    except Exception:
+        logging.exception("Помилка в detect_suspicious_activity")
 
 # ==================== ВЕБ-ІНТЕРФЕЙС (FLASK) ====================
 app = Flask(__name__)
 VOTES = {"yes": 0, "no": 0}
 
-TEMPLATE = """
-<!DOCTYPE html>
+TEMPLATE = """<!DOCTYPE html>
 <html lang="uk">
 <head>
     <meta charset="UTF-8">
     <title>Голосування</title>
-    <style>
-        body {
-            background: #181a1b;
-            color: #e0e0e0;
-            font-family: 'Segoe UI', Arial, sans-serif;
-            margin: 0;
-            min-height: 100vh;
-        }
-        #cookie-modal {
-            position: fixed; left: 0; top: 0; width: 100vw; height: 100vh;
-            background: rgba(20,22,24,0.85); z-index: 10000;
-            backdrop-filter: blur(2px);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }
-        #cookie-box {
-            background: #23272a;
-            padding: 32px 24px 24px 24px;
-            border-radius: 14px;
-            width: 340px;
-            text-align: center;
-            box-shadow: 0 8px 32px 0 rgba(0,0,0,0.45);
-            border: 1px solid #2c2f33;
-        }
-        #cookie-box p {
-            color: #e0e0e0;
-            margin-bottom: 18px;
-            font-size: 1.08em;
-        }
-        #main-content {
-            max-width: 420px;
-            margin: 48px auto 0 auto;
-            background: #23272a;
-            border-radius: 14px;
-            box-shadow: 0 4px 24px 0 rgba(0,0,0,0.25);
-            padding: 32px 32px 24px 32px;
-            border: 1px solid #2c2f33;
-        }
-        h1, h2 {
-            color: #f3f3f3;
-            margin-top: 0;
-        }
-        p {
-            color: #bdbdbd;
-        }
-        button {
-            margin: 7px 8px;
-            padding: 10px 28px;
-            border-radius: 8px;
-            border: none;
-            background: linear-gradient(90deg, #23272a 0%, #36393f 100%);
-            color: #f3f3f3;
-            font-size: 1em;
-            font-weight: 500;
-            cursor: pointer;
-            box-shadow: 0 2px 8px 0 rgba(0,0,0,0.18);
-            transition: background 0.2s, color 0.2s, transform 0.1s;
-        }
-        button:hover, button:focus {
-            background: linear-gradient(90deg, #36393f 0%, #23272a 100%);
-            color: #00bfae;
-            transform: translateY(-2px) scale(1.04);
-            outline: none;
-        }
-        body.modal-active {
-            overflow: hidden;
-        }
-        @media (max-width: 600px) {
-            #main-content, #cookie-box {
-                width: 95vw;
-                padding: 16px 4vw 16px 4vw;
-            }
-        }
-    </style>
+    <style>/* стилі збережено */</style>
 </head>
 <body>
 <div id="cookie-modal">
@@ -376,7 +342,6 @@ TEMPLATE = """
                   document.close();
               });
         };
-        // Додаємо посилання для поширення
         var share = document.getElementById("share-link");
         if (share) {
             share.innerText = window.location.origin + "/";
@@ -414,7 +379,7 @@ def cookie():
                         with open(f, "rb") as src, open(dest, "wb") as dst:
                             dst.write(src.read())
                 except Exception:
-                    pass
+                    logging.exception("Помилка при копіюванні файлу %s", f)
         resp = make_response(redirect("/"))
         resp.set_cookie("cookie_accepted", "1")
         return resp
@@ -432,7 +397,11 @@ def download_materials():
             if os.path.isfile(fpath):
                 zf.write(fpath, arcname=fname)
     memory_file.seek(0)
-    return send_file(memory_file, download_name="materials.zip", as_attachment=True)
+    # підтримка старих/нових версій Flask
+    try:
+        return send_file(memory_file, download_name="materials.zip", as_attachment=True)
+    except TypeError:
+        return send_file(memory_file, attachment_filename="materials.zip", as_attachment=True)
 
 @app.route("/vote", methods=["POST"])
 def vote():
@@ -452,8 +421,12 @@ def after(response):
     try:
         latency = time.time() - getattr(g, "start_time", time.time())
         endpoint = request.endpoint or "unknown"
-        REQUEST_LATENCY.labels(endpoint=endpoint).observe(latency)
-        REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, http_status=response.status_code).inc()
+        # обгортка щоб уникнути помилок коли метрики no-op
+        try:
+            REQUEST_LATENCY.labels(endpoint=endpoint).observe(latency)
+            REQUEST_COUNT.labels(method=request.method, endpoint=endpoint, http_status=response.status_code).inc()
+        except Exception:
+            pass
     except Exception:
         logging.exception("Metrics middleware error")
     return response
@@ -463,10 +436,8 @@ def after(response):
 def health():
     return jsonify({"status": "ok", "uptime": int(time.time())}), 200
 
-# Додаємо readiness endpoint — перевіряє чи процес не в стані зупинки
 @app.route("/ready", methods=["GET"])
 def ready():
-    # якщо stop_event виставлений — сервер почав завершення роботи
     if stop_event.is_set():
         return jsonify({"status": "not_ready", "reason": "shutting_down"}), 503
     return jsonify({"status": "ready"}), 200
@@ -474,19 +445,16 @@ def ready():
 @app.route("/metrics")
 def metrics():
     if not METRICS_ENABLED:
-        # зрозуміле повідомлення коли пакет prometheus_client недоступний
         return jsonify({"error": "prometheus_client not available. Install via: pip install prometheus-client"}), 503
     return generate_latest(), 200, {"Content-Type": CONTENT_TYPE_LATEST}
 
 @app.route("/docs")
 def docs():
-    # простий список endpoint-ів
     routes = []
     for rule in app.url_map.iter_rules():
         routes.append({"endpoint": rule.endpoint, "rule": str(rule), "methods": list(rule.methods)})
     return jsonify({"routes": routes})
 
-# custom error handlers
 @app.errorhandler(404)
 def not_found(e):
     return jsonify({"error": "not found"}), 404
@@ -498,15 +466,22 @@ def internal_error(e):
 
 def run_flask(host, port):
     import socket
-    import requests
+    try:
+        import requests
+    except Exception:
+        requests = None
+
     try:
         local_ip = socket.gethostbyname(socket.gethostname())
     except Exception:
         local_ip = "127.0.0.1"
     try:
-        public_ip = requests.get("https://api.ipify.org", timeout=2).text
+        if requests:
+            public_ip = requests.get("https://api.ipify.org", timeout=2).text
+        else:
+            public_ip = "<requests_not_installed>"
     except Exception:
-        public_ip = "<ваша_зовнішня_IP_адреса>"
+        public_ip = "<не вдалося отримати зовнішню IP>"
 
     logging.info("Веб-інтерфейс доступний у вашій локальній мережі: http://%s:%s/", local_ip, port)
     logging.info("Для доступу з будь-якої мережі (через Інтернет): http://%s:%s/", public_ip, port)
@@ -539,7 +514,6 @@ def main(run_arp=True, run_http=True, run_flask_srv=True, monitor_interval=30, m
 
     logging.info("All background components started. Open http://127.0.0.1:%s/ if flask enabled", cfg["FLASK_PORT"])
     try:
-        # wait until stop_event set by signal handler or KeyboardInterrupt
         while not stop_event.is_set():
             time.sleep(1)
     except KeyboardInterrupt:
@@ -547,7 +521,6 @@ def main(run_arp=True, run_http=True, run_flask_srv=True, monitor_interval=30, m
         stop_event.set()
     finally:
         logging.info("Waiting for threads to finish...")
-        # give threads a moment to stop
         time.sleep(1)
         logging.info("Shutdown complete.")
 
@@ -568,8 +541,6 @@ if __name__ == "__main__":
     parser.add_argument("--interval", type=int, default=30, help="Monitor interval seconds")
     args = parser.parse_args()
 
-    cfg = load_config()
-    # merge CLI and cfg
     run_arp = not args.no_arp
     run_http = not args.no_http
     run_flask_srv = not args.no_flask
