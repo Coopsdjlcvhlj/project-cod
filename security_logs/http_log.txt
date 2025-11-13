@@ -5850,3 +5850,29 @@ Content-Length: 164
 Connection: Keep-Alive
 Accept-Encoding: gzip, deflate
 Accept-Language: ru-UA,en,*...
+2025-11-03 15:32:18.461877: GET /MFQwUjBQME4wTDAJBgUrDgMCGgUABBSIfaREXmfqfJR3TkMYnD7O5MhzEgQUnF8A36oB1zArOIiiuG1KnPIRkYMCEwZ%2FlEoqJ83z%2BsKuKwH5CO65xMY%3D HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+User-Agent: Microsoft-Cry...
+2025-11-03 15:32:18.540066: GET /MFQwUjBQME4wTDAJBgUrDgMCGgUABBRPWaOUU8%2B5VZ5%2Fa9jFTaU9pkK3FAQUhBjMhTTsvAyUlC4IWZzHshBOCggCEwdzEkpLy9ROx7U76vGUhC06D6E%3D HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+User-Agent: Microsoft-Cry...
+2025-11-03 15:38:22.734044: POST /api HTTP/1.1
+Host: 149.154.167.223:80
+Content-Type: application/x-www-form-urlencoded
+Content-Length: 80
+Connection: Keep-Alive
+Accept-Encoding: gzip, deflate
+Accept-Language: ru-UA,en,*
+...
+2025-11-13 17:02:07.411172: GET /msdownload/update/v3/static/trustedr/en/disallowedcertstl.cab?2fe002e54eaa4628 HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Fri, 05 Sep 2025 17:00:56 GMT
+If-None-Match: "774...
+2025-11-13 17:02:07.411899: GET /msdownload/update/v3/static/trustedr/en/disallowedcertstl.cab?2fe002e54eaa4628 HTTP/1.1
+Connection: Keep-Alive
+Accept: */*
+If-Modified-Since: Fri, 05 Sep 2025 17:00:56 GMT
+If-None-Match: "774...

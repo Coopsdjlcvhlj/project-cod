@@ -1,6 +1,6 @@
 import os
 import pytest
-from main import app, load_config, METRICS_ENABLED
+from main1.main import app, load_config, METRICS_ENABLED
 
 @pytest.fixture
 def client():
